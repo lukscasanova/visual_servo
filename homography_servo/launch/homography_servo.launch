@@ -1,0 +1,5 @@
+<launch>
+   <node pkg="homography_servo" name="homography_servo" type="homography_servo_node" output="screen">
+      <rosparam command="load" file="$(find homography_servo)/config/config.yaml"/>
+   </node>
+</launch>

@@ -1,0 +1,16 @@
+track_topic: /tracking
+cmd_vel_topic: /cmd_vel
+desired_xy_scale: 1.0
+desired_center_x: 320
+ang_vel_pid:
+  p: 0.1
+  i: 0.0
+  d: 0.0
+  i_clamp_max: 0.0
+  i_clamp_min: 0.0
+lin_vel_pid:
+  p: 1.0
+  i: 0.0
+  d: 0.0
+  i_clamp_max: 0.0
+  i_clamp_min: 0.0
