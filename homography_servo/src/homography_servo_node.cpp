@@ -36,6 +36,7 @@ void trackingCallback(vtec_msgs::TrackingResult track){
       center_x /= 4;
       center_y /= 4;
 
+      ROS_INFO_STREAM("center_x: " << center_x);
       // Find size
       double x_scale = track.homography[0];
       double y_scale = track.homography[4];
@@ -44,6 +45,7 @@ void trackingCallback(vtec_msgs::TrackingResult track){
 
       // Control in angular velocity
       double ang_vel = ang_vel_pid.computeCommand(desired_center_x - center_x, now-last);
+      // double lin_vel = 0.5;
       double lin_vel = lin_vel_pid.computeCommand(desired_xy_scale - xy_scale, now-last);
       vel.linear.x = lin_vel;
       vel.angular.z = ang_vel;
