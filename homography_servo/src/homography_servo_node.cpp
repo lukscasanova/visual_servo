@@ -19,6 +19,8 @@ vtec_msgs::TrackingResult track;
 
 ros::Time last;
 
+float desired_bbox_x_size = 200;
+float desired_bbox_y_size = 200;
 float desired_center_x = 320;
 float desired_center_y = 320;
 float desired_xy_scale = 1.0;
@@ -112,13 +114,28 @@ void updateControl(const ros::Duration delta_t,
    // }else{
       // Find center point
    float center_x=0.0, center_y=0.0;
+   float dx = 0.0, dy = 0.0;
    for(int i = 0 ; i < 4; i++){
       center_x+= track.corners[i].x;
       center_y+= track.corners[i].y;
    }
+
    center_x /= 4;
    center_y /= 4;
 
+
+   double bbox_size_x;
+   double bbox_size_y;
+
+   bbox_size_x = (track.corners[2].x + track.corners[3].x) - (track.corners[0].x + track.corners[1].x);
+   bbox_size_y = (track.corners[1].y + track.corners[3].y) - (track.corners[0].y + track.corners[2].y);
+
+   ROS_INFO_STREAM("bbox_size_x: " << bbox_size_x);
+   ROS_INFO_STREAM("bbox_size_y: " << bbox_size_y);
+
+
+   double size_error = desired_bbox_x_size + desired_bbox_y_size - (bbox_size_y + bbox_size_x)/2.0;
+   
    ROS_INFO_STREAM("center_x: " << center_x);
    ROS_INFO_STREAM("center_y: " << center_y);
    // Find size
@@ -128,10 +145,12 @@ void updateControl(const ros::Duration delta_t,
    double xy_scale = x_scale*y_scale;
       // Control in angular velocity
 
+   double f_x = fx_pid.computeCommand(size_error, delta_t);
    double f_y = fy_pid.computeCommand(desired_center_x - center_x, delta_t);
    double f_z = fz_pid.computeCommand(desired_center_y - center_y, delta_t) + GRAVITY;
 
    ROS_INFO_STREAM("F_Z: " << f_z);
+   desired_force.setX(f_x);
    desired_force.setY(f_y);
    desired_force.setZ(f_z);
 
@@ -157,7 +176,10 @@ int main(int argc, char **argv){
    nhPrivate.getParam("cmd_vel_topic", cmd_vel_topic);
    nhPrivate.getParam("desired_xy_scale", desired_xy_scale);
    nhPrivate.getParam("desired_center_x", desired_center_x);
+   nhPrivate.getParam("desired_bbox_x_size", desired_bbox_x_size);
+   nhPrivate.getParam("desired_bbox_y_size", desired_bbox_y_size);
 
+   fx_pid.initParam("~fx_pid");
    fy_pid.initParam("~fy_pid");
    fz_pid.initParam("~fz_pid");
    

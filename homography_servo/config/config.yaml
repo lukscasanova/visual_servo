@@ -3,9 +3,17 @@ cmd_vel_topic: /cmd_vel
 desired_xy_scale: 3.0
 desired_center_x: 450
 desired_center_y: 300
-fy_pid:
+desired_bbox_x_size: 400
+desired_bbox_y_size: 400
+fx_pid:
   p: 0.0005
-  i: 0.0
+  i: 0.000001
+  d: 0.0000
+  i_clamp_max: 0.0
+  i_clamp_min: 0.0
+fy_pid:
+  p: 0.002
+  i: 0.000001
   d: 0.0001
   i_clamp_max: 0.0
   i_clamp_min: 0.0
