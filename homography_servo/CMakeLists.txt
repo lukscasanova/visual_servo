@@ -13,6 +13,7 @@ find_package(catkin REQUIRED COMPONENTS
   std_msgs
   vtec_msgs
   control_toolbox
+  mavros_msgs
 )
 
 ## System dependencies are found with CMake's conventions
