@@ -6,20 +6,20 @@ desired_center_y: 300
 desired_bbox_x_size: 400
 desired_bbox_y_size: 400
 fx_pid:
-  p: 0.0005
-  i: 0.000001
-  d: 0.0000
+  p: 1.0
+  i: 0.0000
+  d: 0.00
   i_clamp_max: 0.0
   i_clamp_min: 0.0
 fy_pid:
-  p: 0.002
-  i: 0.000001
-  d: 0.0001
+  p: 0.001
+  i: 0.000000
+  d: 0.0000
   i_clamp_max: 0.0
   i_clamp_min: 0.0
 fz_pid:
-  p: 0.01
-  i: 0.000
-  d: 0.002
+  p: 0.004
+  i: 0.0000000
+  d: 0.0005
   i_clamp_max: 0.0
   i_clamp_min: 0.0

@@ -4,26 +4,30 @@
 #include <control_toolbox/pid.h>
 #include <mavros_msgs/AttitudeTarget.h>
 #include <tf/transform_datatypes.h>
+#include <std_msgs/Float64.h>
 
 #define GRAVITY_THRUST     0.496
 #define GRAVITY            9.81
 
 ros::Publisher* cmd_vel_pub_ptr;
 ros::Publisher cmd_att_pub;
+ros::Publisher angle_error_pub;
 
 control_toolbox::Pid fx_pid, fy_pid, fz_pid;
 control_toolbox::Pid yaw_pid;
 
 mavros_msgs::AttitudeTarget cmd_att_msg;
 vtec_msgs::TrackingResult track;
+std_msgs::Float64 angle_error_msg;
 
 ros::Time last;
 
-float desired_bbox_x_size = 200;
-float desired_bbox_y_size = 200;
-float desired_center_x = 320;
-float desired_center_y = 320;
-float desired_xy_scale = 1.0;
+int desired_bbox_x_size = 200;
+int desired_bbox_y_size = 200;
+int desired_center_x = 320;
+int desired_center_y = 320;
+
+std::vector<geometry_msgs::Point> desired_corners, corner_errors;
 
 tf::Vector3 desired_force(0.0, 0.0, 0.0);
 tf::Vector3 desired_orientation_rpy(0.0, 0.0, 0.0);
@@ -42,7 +46,34 @@ double applyLimits(const double v, const double lo, const double hi){
     return v;
 }
 
+void createDesiredCornersList(
+   const int desired_bbox_x_size,
+   const int desired_bbox_y_size,
+   const int desired_center_x,
+   const int desired_center_y,
+   std::vector<geometry_msgs::Point>& desired_corners){
 
+   desired_corners.clear();
+
+   geometry_msgs::Point up_left, up_right, down_left, down_right;
+   down_left.x = desired_center_x - desired_bbox_x_size/2.0;
+   down_left.y = desired_center_y - desired_bbox_y_size/2.0;
+
+   up_left.x = desired_center_x - desired_bbox_x_size/2.0;
+   up_left.y = desired_center_y + desired_bbox_y_size/2.0;
+
+   down_right.x = desired_center_x + desired_bbox_x_size/2.0;
+   down_right.y = desired_center_y - desired_bbox_y_size/2.0;
+
+   up_right.x = desired_center_x + desired_bbox_x_size/2.0;
+   up_right.y = desired_center_y + desired_bbox_y_size/2.0;
+
+   desired_corners.push_back(down_left);
+   desired_corners.push_back(up_left);
+   desired_corners.push_back(down_right);
+   desired_corners.push_back(up_right);
+  
+}
 
 
 /**
@@ -109,23 +140,28 @@ void updateControl(const ros::Duration delta_t,
    mavros_msgs::AttitudeTarget& cmd){
 
    // If result not good enough, hold still.
-   // if(track.score < 0.5){
+     // if(track.score < 0.5){
       // cmd_vel_pub_ptr->publish(vel);
    // }else{
       // Find center point
    float center_x=0.0, center_y=0.0;
    float dx = 0.0, dy = 0.0;
+
    for(int i = 0 ; i < 4; i++){
-      center_x+= track.corners[i].x;
-      center_y+= track.corners[i].y;
+      center_x += track.corners[i].x;
+      center_y += track.corners[i].y;
    }
 
    center_x /= 4;
    center_y /= 4;
 
-
    double bbox_size_x;
    double bbox_size_y;
+
+   double bbox_left_size_y = track.corners[1].y-track.corners[0].y;
+   double bbox_right_size_y = track.corners[3].x-track.corners[2].y;
+
+   double angle_error = (bbox_right_size_y - bbox_left_size_y);
 
    bbox_size_x = (track.corners[2].x + track.corners[3].x) - (track.corners[0].x + track.corners[1].x);
    bbox_size_y = (track.corners[1].y + track.corners[3].y) - (track.corners[0].y + track.corners[2].y);
@@ -133,8 +169,17 @@ void updateControl(const ros::Duration delta_t,
    ROS_INFO_STREAM("bbox_size_x: " << bbox_size_x);
    ROS_INFO_STREAM("bbox_size_y: " << bbox_size_y);
 
+   double size_xy_avg = (bbox_size_y + bbox_size_x)/2.0;
 
-   double size_error = desired_bbox_x_size + desired_bbox_y_size - (bbox_size_y + bbox_size_x)/2.0;
+   double size_error = desired_bbox_x_size + desired_bbox_y_size - size_xy_avg;
+   ROS_INFO_STREAM("size_error pre normalization: " << size_error);
+   size_error /= fabs(size_xy_avg);
+   ROS_INFO_STREAM("size_error pos normalization: " << size_error);
+
+
+   angle_error_msg.data = angle_error;
+   angle_error_pub.publish(angle_error_msg);
+   ROS_INFO_STREAM("ANGLE ERROR: " << angle_error_msg.data);
    
    ROS_INFO_STREAM("center_x: " << center_x);
    ROS_INFO_STREAM("center_y: " << center_y);
@@ -174,7 +219,6 @@ int main(int argc, char **argv){
    std::string cmd_vel_topic = "cmd_vel";
    nhPrivate.getParam("track_topic", track_topic);
    nhPrivate.getParam("cmd_vel_topic", cmd_vel_topic);
-   nhPrivate.getParam("desired_xy_scale", desired_xy_scale);
    nhPrivate.getParam("desired_center_x", desired_center_x);
    nhPrivate.getParam("desired_bbox_x_size", desired_bbox_x_size);
    nhPrivate.getParam("desired_bbox_y_size", desired_bbox_y_size);
@@ -182,6 +226,9 @@ int main(int argc, char **argv){
    fx_pid.initParam("~fx_pid");
    fy_pid.initParam("~fy_pid");
    fz_pid.initParam("~fz_pid");
+
+   createDesiredCornersList(desired_bbox_x_size, desired_bbox_y_size, desired_center_x, desired_center_y, desired_corners);
+
    
    // Subscribers 
    ros::Subscriber track_sub = nh.subscribe<vtec_msgs::TrackingResult>(track_topic, 1, trackingCallback);
@@ -191,6 +238,7 @@ int main(int argc, char **argv){
    cmd_vel_pub_ptr = &cmd_vel_pub;
    cmd_att_pub = nh.advertise<mavros_msgs::AttitudeTarget>
                     ("mavros/setpoint_raw/attitude", 10);
+   angle_error_pub = nh.advertise<std_msgs::Float64>("/angle_error",10);
 
    last = ros::Time::now();
 
