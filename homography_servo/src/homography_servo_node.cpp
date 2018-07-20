@@ -5,23 +5,37 @@
 #include <mavros_msgs/AttitudeTarget.h>
 #include <tf/transform_datatypes.h>
 #include <std_msgs/Float64.h>
+#include <opencv2/core/core.hpp>
+#include <opencv2/calib3d/calib3d.hpp>
+#include <geometry_msgs/PoseStamped.h>
+#include <sensor_msgs/LaserScan.h>
+#include <tf/transform_broadcaster.h>
 
 #define GRAVITY_THRUST     0.496
 #define GRAVITY            9.81
 
+// Thrust multiplier for uav
+double thrust_factor = GRAVITY_THRUST/GRAVITY;
+
+// Publisher objects
 ros::Publisher* cmd_vel_pub_ptr;
 ros::Publisher cmd_att_pub;
 ros::Publisher angle_error_pub;
+ros::Publisher pose_homography_pub;
 
+// Pid objects
 control_toolbox::Pid fx_pid, fy_pid, fz_pid;
 control_toolbox::Pid yaw_pid;
 
+// ROS Messages
 mavros_msgs::AttitudeTarget cmd_att_msg;
 vtec_msgs::TrackingResult track;
 std_msgs::Float64 angle_error_msg;
+geometry_msgs::PoseStamped pose_msg;
 
 ros::Time last;
 
+// Desired parameters
 int desired_bbox_x_size = 200;
 int desired_bbox_y_size = 200;
 int desired_center_x = 320;
@@ -32,7 +46,16 @@ std::vector<geometry_msgs::Point> desired_corners, corner_errors;
 tf::Vector3 desired_force(0.0, 0.0, 0.0);
 tf::Vector3 desired_orientation_rpy(0.0, 0.0, 0.0);
 
-double thrust_factor = GRAVITY_THRUST/GRAVITY;
+// Camera calibration parameters
+
+// Gazebo camera
+// [476.7030836014194, 0.0, 400.5, 0.0, 476.7030836014194, 400.5, 0.0, 0.0, 1.0];
+cv::Mat calibration_mat = (cv::Mat_<double>(3, 3) << 476.7030836014194, 0.0, 400.5, 0.0, 476.7030836014194, 400.5, 0.0, 0.0, 1.0);
+cv::Mat calibration_mat_inv = calibration_mat.inv();
+
+cv::Mat base_H = (cv::Mat_<double>(3, 3) << 1.0, 0.0, 450.0, 0.0, 1.0, 300.0, 0.0, 0.0, 1.0);
+
+double laser_distance;
 
 bool has_tracking = false;
 
@@ -44,6 +67,61 @@ double applyLimits(const double v, const double lo, const double hi){
     if(v < lo) return lo;
     if(v > hi) return hi;
     return v;
+}
+
+void homographyArrayToMat(const vtec_msgs::TrackingResult msg, cv::Mat& H){
+   H = cv::Mat(3,3,CV_64F);
+
+   H.at<double>(0,0) = msg.homography[0];
+   H.at<double>(0,1) = msg.homography[1];
+   H.at<double>(0,2) = msg.homography[2];
+   H.at<double>(1,0) = msg.homography[3];
+   H.at<double>(1,1) = msg.homography[4];
+   H.at<double>(1,2) = msg.homography[5];
+   H.at<double>(2,0) = msg.homography[6];
+   H.at<double>(2,1) = msg.homography[7];
+   H.at<double>(2,2) = msg.homography[8];
+
+}
+
+void buildPoseMsgFromTranslationAndRotation(
+   const cv::Mat& otw,
+   const cv::Mat& oRw,
+   const ros::Time timestamp,
+   geometry_msgs::PoseStamped& pose_msg){
+
+   pose_msg.header.frame_id = "camera_cv_link";
+   pose_msg.header.stamp = timestamp;
+
+   tf::Matrix3x3 m( oRw.at<double>(0,0), oRw.at<double>(0,1), oRw.at<double>(0,2),
+                    oRw.at<double>(1,0), oRw.at<double>(1,1), oRw.at<double>(1,2),
+                    oRw.at<double>(2,0), oRw.at<double>(2,1), oRw.at<double>(2,2));
+
+   tf::Quaternion q;
+   m.getRotation(q);
+
+   q.normalize();
+
+   pose_msg.pose.orientation.x = q.getX();
+   pose_msg.pose.orientation.y = q.getY();
+   pose_msg.pose.orientation.z = q.getZ();
+   pose_msg.pose.orientation.w = q.getW();
+
+   pose_msg.pose.position.x = otw.at<double>(0,0); 
+   pose_msg.pose.position.y = otw.at<double>(1,0);
+   pose_msg.pose.position.z = otw.at<double>(2,0);
+
+   static tf::TransformBroadcaster br;
+   tf::Stamped<tf::Pose> st;
+   tf::poseStampedMsgToTF(pose_msg, st);
+
+   tf::StampedTransform stamped_transform = tf::StampedTransform(st, pose_msg.header.stamp+ros::Duration(0.05), "camera_cv_link", "current_image");
+   // tf::Transform transform = stamped_transform.inverse();
+   // stamped_transform = tf::StampedTransform(transform, pose_msg.header.stamp+ros::Duration(0.05), "camera_cv_link", "current_image");
+   // tf::Quaternion q;
+   // q.setRPY(0, 0, 0);
+   // st.setRotation(q);
+   br.sendTransform(stamped_transform);
 }
 
 void createDesiredCornersList(
@@ -75,7 +153,6 @@ void createDesiredCornersList(
   
 }
 
-
 /**
  * @brief      Builds an attitude target message.
  *
@@ -106,7 +183,7 @@ void buildAttTargetMsg(
     cmd_att_msg.orientation.y = q.getY();
     cmd_att_msg.orientation.z = q.getZ();
     cmd_att_msg.orientation.w = q.getW();
-// 
+
     double thrust_x = cmd_dfc_acc.getX()*thrust_factor;
     // double thrust_x = f_des.getX()*thrust_factor;
     thrust_x = applyLimits(thrust_x, -1.0f, 1.0);
@@ -134,6 +211,30 @@ void buildAttTargetMsg(
          thrust_y*thrust_y + 
          thrust_z*thrust_z);
    
+}
+
+void pose_from_homography_dlt(cv::Mat H, cv::Mat &otw, cv::Mat &oRw)
+{
+
+   H = H*base_H.inv(); 
+   cv::Mat oHw = calibration_mat_inv*H*calibration_mat;
+   // oHw = oHw.inv();
+  // Normalization to ensure that ||c1|| = 1
+  double norm = sqrt(oHw.at<double>(0,0)*oHw.at<double>(0,0)
+                     + oHw.at<double>(1,0)*oHw.at<double>(1,0)
+                     + oHw.at<double>(2,0)*oHw.at<double>(2,0));
+  oHw /= norm;
+  cv::Mat c1  = oHw.col(0);
+  cv::Mat c2  = oHw.col(1);
+  cv::Mat c3 = c1.cross(c2);
+  otw = oHw.col(2);
+  for(int i=0; i < 3; i++) {
+    oRw.at<double>(i,0) = c1.at<double>(i,0);
+    oRw.at<double>(i,1) = c2.at<double>(i,0);
+    oRw.at<double>(i,2) = c3.at<double>(i,0);
+  }
+
+  otw*=laser_distance;
 }
 
 void updateControl(const ros::Duration delta_t, 
@@ -192,9 +293,11 @@ void updateControl(const ros::Duration delta_t,
 
    double f_x = fx_pid.computeCommand(size_error, delta_t);
    double f_y = fy_pid.computeCommand(desired_center_x - center_x, delta_t);
-   double f_z = fz_pid.computeCommand(desired_center_y - center_y, delta_t) + GRAVITY;
+   double f_z = fz_pid.computeCommand(desired_center_y - center_y, delta_t);
 
    ROS_INFO_STREAM("F_Z: " << f_z);
+   f_z += GRAVITY;
+
    desired_force.setX(f_x);
    desired_force.setY(f_y);
    desired_force.setZ(f_z);
@@ -205,6 +308,28 @@ void updateControl(const ros::Duration delta_t,
 void trackingCallback(const vtec_msgs::TrackingResult::ConstPtr& track_msg){
    track = *track_msg;
    has_tracking = true;
+
+
+   // Experimenting with Homography Decomposition
+   cv::Mat homography_mat;
+   homographyArrayToMat(track, homography_mat);
+   
+   cv::Mat otw(3, 1, CV_64F); // Translation vector
+   cv::Mat oRw(3, 3, CV_64F); // Rotation matrix
+   pose_from_homography_dlt(homography_mat, otw, oRw);
+
+   buildPoseMsgFromTranslationAndRotation(otw, oRw, track.header.stamp, pose_msg);
+
+   pose_homography_pub.publish(pose_msg);
+}
+
+void laserCallback(const sensor_msgs::LaserScan laser_msg){
+   double min = 1000000.0;
+   for(size_t i = 0; i < laser_msg.ranges.size(); ++i) {
+      if(laser_msg.ranges[i] < min) min = laser_msg.ranges[i];
+   }
+   laser_distance = min;
+   ROS_INFO_STREAM("laser_distance: " << laser_distance );
 }
 
 
@@ -220,6 +345,7 @@ int main(int argc, char **argv){
    nhPrivate.getParam("track_topic", track_topic);
    nhPrivate.getParam("cmd_vel_topic", cmd_vel_topic);
    nhPrivate.getParam("desired_center_x", desired_center_x);
+   nhPrivate.getParam("desired_center_y", desired_center_y);
    nhPrivate.getParam("desired_bbox_x_size", desired_bbox_x_size);
    nhPrivate.getParam("desired_bbox_y_size", desired_bbox_y_size);
 
@@ -228,18 +354,19 @@ int main(int argc, char **argv){
    fz_pid.initParam("~fz_pid");
 
    createDesiredCornersList(desired_bbox_x_size, desired_bbox_y_size, desired_center_x, desired_center_y, desired_corners);
-
    
    // Subscribers 
    ros::Subscriber track_sub = nh.subscribe<vtec_msgs::TrackingResult>(track_topic, 1, trackingCallback);
+   ros::Subscriber laser_sub = nh.subscribe<sensor_msgs::LaserScan>("/scan", 1, laserCallback);
 
    // Publishers
    ros::Publisher cmd_vel_pub = nh.advertise<geometry_msgs::Twist>(cmd_vel_topic, 1);
    cmd_vel_pub_ptr = &cmd_vel_pub;
-   cmd_att_pub = nh.advertise<mavros_msgs::AttitudeTarget>
-                    ("mavros/setpoint_raw/attitude", 10);
+   cmd_att_pub = nh.advertise<mavros_msgs::AttitudeTarget>("mavros/setpoint_raw/attitude", 10);
    angle_error_pub = nh.advertise<std_msgs::Float64>("/angle_error",10);
+   pose_homography_pub = nh.advertise<geometry_msgs::PoseStamped>("/homography_pose",10);
 
+   // Main Loop
    last = ros::Time::now();
 
    ros::Rate rate(30.0);
